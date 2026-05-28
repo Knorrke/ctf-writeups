@@ -787,10 +787,12 @@ Offset    Instruction                                   Comment
 
 The VM bytecode does the following:
 - Copy the input bytes 0-0x2e (Note: this indicates the flag has length 0x2e )
-- Load hardcoded 32 bytes
+- Load hardcoded 32 bytes (salt)
 - Call `FUN_0010333c`, which claude called `sha256_init`......... More about this later...
-- Call `sha256_update` and `sha256_finalize` 5 letters of the flag at a time together with previous 32bytes
-- Compare it to predefined hashes... however these hashes are not in the bytecode...
+- Call `sha256_update` and `sha256_finalize` 5 letters of the flag at a time together with previous 32 bytes hash and the 32 bytes salt
+- Compare it to predefined hashes... 
+ 
+However, the expected hashes are not in the VM bytecode...
 
 ## Finding the expected hashes
 Again we can use frida to dump the expected hashes at runtime, for which I asked claude to generate a frida hook:
@@ -1070,3 +1072,314 @@ void FUN_0010333c(undefined4 *param_1)
 ```
 
 Feeding all of this into claude it generated a bruteforce script to crack the flag
+
+## Brute forcing flag parts
+
+Remember that claude called `FUN_0010333c` `sha256_init` in the disassembler... However, it turned out to have different initalization vectors.
+```c
+void FUN_0010333c(undefined4 *param_1)
+
+{
+  *param_1 = 0xe32c075b;
+  param_1[1] = 0xee560be;
+  param_1[2] = 0x8a090996;
+  param_1[3] = 0x2d601849;
+  param_1[4] = 0xe7eaecb;
+  param_1[5] = 0xc8d60ace;
+  param_1[6] = 0xaa5e7636;
+  *(undefined8 *)(param_1 + 8) = 0;
+  *(undefined8 *)(param_1 + 0x1a) = 0;
+  param_1[7] = 0x4a476eb3;
+  return;
+}
+```
+
+Feeding all of this into claude it generated a bruteforce script to crack the flag
+
+```c
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+
+#define ROTR(x,n) (((x) >> (n)) | ((x) << (32-(n))))
+
+static const char ALPHABET[] =
+    "abcdefghijklmnopqrstuvwxyz0123456789_";
+
+#define ALPHABET_LEN 37
+
+static const uint32_t K256[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+};
+
+static const uint32_t CUSTOM_IV[8] = {
+    0xe32c075b, 0x0ee560be, 0x8a090996, 0x2d601849,
+    0x0e7eaecb, 0xc8d60ace, 0xaa5e7636, 0x4a476eb3,
+};
+
+static const uint8_t SALT[32] = {
+    0xbc,0x4f,0xf0,0x63,0x16,0x77,0x09,0xec,
+    0x1f,0x44,0xa5,0x0a,0x24,0x81,0x50,0xe1,
+    0x37,0x00,0xd8,0xca,0x10,0x18,0x39,0x57,
+    0xb8,0xc6,0xc4,0x91,0x0c,0x9e,0x2f,0x4b
+};
+
+static uint8_t ANSWERS[10][32] = {
+    {0x38,0xac,0x80,0x08,0xd7,0x3d,0x40,0x91,0x29,0xae,0x80,0x46,0x75,0x7f,0x47,0xa4,0xa5,0x4d,0x31,0x16,0x1c,0x89,0x0b,0x07,0x21,0xd9,0x9c,0x4d,0x4b,0x67,0xb7,0xbc},
+    {0xae,0x6e,0x54,0x65,0x5c,0x2b,0x7c,0x35,0x3c,0x9b,0x0a,0x06,0xc1,0x7d,0x72,0xaf,0x6e,0x9b,0x07,0x9d,0x52,0x47,0x71,0x9a,0x7a,0x71,0x70,0x59,0xe3,0x67,0xf4,0x3a},
+    {0xe0,0x57,0x6e,0xe2,0x17,0x37,0x74,0xe4,0x78,0x07,0xb8,0xf4,0x7d,0x80,0x6e,0x84,0x37,0xf3,0x0c,0x50,0x21,0x45,0xdc,0xf7,0x67,0x09,0xce,0xfe,0x62,0x2a,0xfd,0xed},
+    {0x72,0x70,0x14,0xca,0x91,0x91,0xa6,0xe9,0x65,0x89,0x87,0xe3,0x26,0x9c,0xfe,0xea,0xc7,0x03,0xcc,0x64,0x15,0x7a,0x95,0x8c,0x6c,0x5a,0x2a,0xe4,0x67,0xd7,0x86,0xd7},
+    {0x08,0x82,0x75,0x90,0x6a,0x19,0xa5,0xbf,0x8d,0x73,0xf2,0x80,0x4e,0x10,0xfa,0x63,0x3d,0x2e,0xaf,0x6b,0xf8,0x2c,0x15,0x2d,0xb9,0x37,0xc5,0xfe,0xe9,0x89,0xfd,0x33},
+    {0xb7,0x35,0x7f,0x71,0x19,0xf2,0xa6,0x10,0xd6,0x74,0x31,0xf3,0x66,0x14,0xe8,0x3b,0x93,0x60,0x31,0x8e,0x76,0x49,0xd6,0xaa,0x2c,0xbc,0xe5,0xde,0x1d,0x6b,0x9e,0x36},
+    {0x60,0xf5,0x15,0x63,0xcd,0x26,0x71,0x5d,0x19,0xd1,0xd6,0x65,0xce,0x34,0xaa,0xd6,0x5e,0xf0,0xa5,0xf8,0x48,0x19,0x2d,0x0e,0x12,0xb4,0x41,0x7c,0x71,0xa2,0xc6,0x89},
+    {0x7f,0xde,0x45,0x9c,0x4e,0x57,0xce,0x12,0x8f,0xac,0x84,0xa6,0xc3,0xaa,0x59,0x12,0xbc,0xa7,0x3c,0x26,0x31,0x32,0x4c,0x1f,0xa9,0xfa,0x30,0xd4,0x36,0x65,0xee,0x3a},
+    {0xf3,0xf4,0x39,0x9d,0x94,0x35,0xdc,0x75,0xe5,0x4a,0x58,0xf3,0x71,0x51,0x25,0x35,0xc5,0xe6,0x60,0x77,0xf9,0xbd,0xc2,0x42,0x6f,0x25,0x27,0x5c,0x78,0x24,0xb4,0xdd},
+    {0x66,0xa0,0xbe,0x93,0x96,0xf6,0x8b,0xde,0xf5,0x50,0x25,0x03,0xfc,0xcb,0xa9,0x6a,0x79,0x0c,0x06,0xca,0x18,0x79,0x0c,0x9c,0xcf,0x6a,0xf4,0xbf,0xe2,0xff,0xee,0xad}
+};
+
+static inline void compress(uint32_t *state, const uint32_t W_in[16]) {
+    uint32_t W[64];
+    for (int i = 0; i < 16; i++) W[i] = W_in[i];
+    for (int i = 16; i < 64; i++) {
+        uint32_t s0 = ROTR(W[i-15], 7) ^ ROTR(W[i-15], 18) ^ (W[i-15] >> 3);
+        uint32_t s1 = ROTR(W[i-2], 17) ^ ROTR(W[i-2], 19) ^ (W[i-2] >> 10);
+        W[i] = W[i-16] + s0 + W[i-7] + s1;
+    }
+    uint32_t a=state[0],b=state[1],c=state[2],d=state[3],e=state[4],f=state[5],g=state[6],h=state[7];
+    for (int i = 0; i < 64; i++) {
+        uint32_t S1 = ROTR(e,6) ^ ROTR(e,11) ^ ROTR(e,25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t t1 = h + S1 + ch + K256[i] + W[i];
+        uint32_t S0 = ROTR(a,2) ^ ROTR(a,13) ^ ROTR(a,22);
+        uint32_t mj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t t2 = S0 + mj;
+        h=g; g=f; f=e; e=d+t1; d=c; c=b; b=a; a=t1+t2;
+    }
+    state[0]+=a; state[1]+=b; state[2]+=c; state[3]+=d;
+    state[4]+=e; state[5]+=f; state[6]+=g; state[7]+=h;
+}
+
+/*
+ * For a 5-byte chunk hashed as: chunk(5) || chain(32) || salt(32)  -- 69 bytes
+ * Block 1 layout (64 bytes): chunk[0..4] || chain[0..31] || salt[0..26]
+ * Block 2 layout (64 bytes): salt[27..31] || 0x80 || zeros... || length_be64(69*8=552)
+ *
+ * Within a single round (fixed chain), block 2 is fully fixed, and bytes 5..63 of block 1
+ * are also fixed. Only bytes 0..4 (= the chunk itself) vary.
+ *
+ * Mapping bytes to 32-bit big-endian words W[0..15] of block 1:
+ *   W[0] = chunk[0..3]
+ *   W[1] = chunk[4], chain[0], chain[1], chain[2]
+ *   W[2..15] are constants for the round (chain[3..31] || salt[0..26])
+ */
+int find_chunk5(const uint8_t* prefix, int prefix_len,
+                const uint8_t* chain, const uint8_t* salt,
+                const uint8_t* target, uint8_t* found) {
+    if (prefix_len > 5) return 0;
+
+    /* Build & precompute block 1 (chunk-independent part) and block 2 W schedule */
+    uint8_t blk1[64], blk2[64];
+    memcpy(blk1 + 5, chain, 32);
+    memcpy(blk1 + 37, salt, 27);
+
+    memcpy(blk2, salt + 27, 5);
+    blk2[5] = 0x80;
+    memset(blk2 + 6, 0, 64 - 6 - 8);
+    /* 64-bit big-endian length = 552 (0x228) */
+    blk2[56] = 0; blk2[57] = 0; blk2[58] = 0; blk2[59] = 0;
+    blk2[60] = 0; blk2[61] = 0; blk2[62] = 0x02; blk2[63] = 0x28;
+
+    uint32_t W2[16];
+    for (int i = 0; i < 16; i++) {
+        W2[i] = ((uint32_t)blk2[i*4]<<24) | ((uint32_t)blk2[i*4+1]<<16)
+              | ((uint32_t)blk2[i*4+2]<<8) | blk2[i*4+3];
+    }
+
+    /* W1[2..15] are constant (chain+salt) for this round */
+    uint32_t W1_const[16];
+    for (int i = 0; i < 16; i++) {
+        W1_const[i] = ((uint32_t)blk1[i*4]<<24) | ((uint32_t)blk1[i*4+1]<<16)
+                    | ((uint32_t)blk1[i*4+2]<<8) | blk1[i*4+3];
+    }
+    /* The "chain prefix" used inside W[1] = chain[0]<<16 | chain[1]<<8 | chain[2] */
+    uint32_t chain_lo3 = ((uint32_t)chain[0]<<16) | ((uint32_t)chain[1]<<8) | chain[2];
+
+    /* Target as big-endian uint32 words */
+    uint32_t T[8];
+    for (int i = 0; i < 8; i++) {
+        T[i] = ((uint32_t)target[i*4]<<24) | ((uint32_t)target[i*4+1]<<16)
+             | ((uint32_t)target[i*4+2]<<8) | target[i*4+3];
+    }
+
+    uint8_t chunk[5];
+    for (int i = 0; i < prefix_len; i++) chunk[i] = prefix[i];
+    int n = 5 - prefix_len;
+    int idx[5] = {0,0,0,0,0};
+
+    while (1) {
+        for (int i = 0; i < n; i++) chunk[prefix_len + i] = ALPHABET[idx[i]];
+
+        uint32_t W1[16];
+        W1[0] = ((uint32_t)chunk[0]<<24) | ((uint32_t)chunk[1]<<16) | ((uint32_t)chunk[2]<<8) | chunk[3];
+        W1[1] = ((uint32_t)chunk[4]<<24) | chain_lo3;
+        for (int i = 2; i < 16; i++) W1[i] = W1_const[i];
+
+        uint32_t state[8];
+        memcpy(state, CUSTOM_IV, 32);
+        compress(state, W1);
+        compress(state, W2);
+
+        if (state[0]==T[0] && state[1]==T[1] && state[2]==T[2] && state[3]==T[3] &&
+            state[4]==T[4] && state[5]==T[5] && state[6]==T[6] && state[7]==T[7]) {
+            memcpy(found, chunk, 5);
+            return 1;
+        }
+
+        int k = n - 1;
+        while (k >= 0) {
+            idx[k]++;
+            if (idx[k] < ALPHABET_LEN) break;
+            idx[k] = 0;
+            k--;
+        }
+        if (k < 0) return 0;
+    }
+}
+
+int find_lastchunk(const uint8_t* chain, const uint8_t* salt,
+                const uint8_t* target, uint8_t* found) {
+
+    uint8_t blk1[64], blk2[64];
+    blk1[1] = 0x7d; // '}'
+    memcpy(blk1 + 2, chain, 32);
+    memcpy(blk1 + 34, salt, 30);
+
+    memcpy(blk2, salt + 30, 2);
+    blk2[2] = 0x80;
+    memset(blk2 + 3, 0, 64 - 3 - 8);
+    /* length = 66 * 8 = 528 = 0x210 */
+    blk2[56] = 0; blk2[57] = 0; blk2[58] = 0; blk2[59] = 0;
+    blk2[60] = 0; blk2[61] = 0; blk2[62] = 0x02; blk2[63] = 0x10;
+
+    uint32_t W2[16];
+    for (int i = 0; i < 16; i++) {
+        W2[i] = ((uint32_t)blk2[i*4]<<24) | ((uint32_t)blk2[i*4+1]<<16)
+              | ((uint32_t)blk2[i*4+2]<<8) | blk2[i*4+3];
+    }
+
+    uint32_t T[8];
+    for (int i = 0; i < 8; i++) {
+        T[i] = ((uint32_t)target[i*4]<<24) | ((uint32_t)target[i*4+1]<<16)
+             | ((uint32_t)target[i*4+2]<<8) | target[i*4+3];
+    }
+
+    uint8_t c;
+    int idx = 0;
+
+    while (1) {
+        blk1[0] = ALPHABET[idx];
+
+        uint32_t W1[16];
+        for (int i = 0; i < 16; i++) {
+            W1[i] = ((uint32_t)blk1[i*4]<<24) | ((uint32_t)blk1[i*4+1]<<16)
+                  | ((uint32_t)blk1[i*4+2]<<8) | blk1[i*4+3];
+        }
+
+        uint32_t state[8];
+        memcpy(state, CUSTOM_IV, 32);
+        compress(state, W1);
+        compress(state, W2);
+
+        if (state[0]==T[0] && state[1]==T[1] && state[2]==T[2] && state[3]==T[3] &&
+            state[4]==T[4] && state[5]==T[5] && state[6]==T[6] && state[7]==T[7]) {
+            found[0] = ALPHABET[idx];
+            found[1] = '}';
+            return 1;
+        }
+
+        idx++;
+        if (idx >= ALPHABET_LEN) return 0;
+    }
+}
+
+int main() {
+
+    char final_flag[48] = {0};
+
+    uint8_t prev[32];
+    memset(prev, 0, 32);
+
+    printf("[+] Stage 0\n");
+    char chunk[5];
+
+    uint8_t prefix[4] = {'H','T','B','{'};
+
+    find_chunk5(prefix, 4, prev, SALT, ANSWERS[0], chunk);
+    printf("[+] Found %s\n", chunk);
+    memcpy(final_flag, chunk, 5);
+
+    memcpy(prev,ANSWERS[0],32);
+
+    for (int stage=1; stage<9; stage++) {
+
+        printf("[+] Stage %d\n", stage);
+
+        find_chunk5((uint8_t*){}, 0, prev, SALT, ANSWERS[stage], chunk);
+        printf("[+] Found %s\n", chunk);
+        memcpy(final_flag + stage*5, chunk, 5);
+
+        memcpy(prev,ANSWERS[stage],32);
+    }
+
+    printf("[+] Stage 9\n");
+
+    char lastchunk[2];
+    find_lastchunk(prev, SALT, ANSWERS[9], lastchunk);
+    printf("[+] Found %s\n", lastchunk);
+    memcpy(final_flag + 45, lastchunk, 2);
+
+  
+    final_flag[47] = 0;
+
+    printf("\nFLAG: %s\n", final_flag);
+
+    return 0;
+}
+```
+
+```shell
+┌──(.mobile-venv)─(kali㉿kali)-[/mnt/…/htb/CTF/CTF-Business2026/mobile_noctavault]
+└─$ gcc -O3 -march=native -pthread bruteforce.c -o bruteforce
+
+┌──(.mobile-venv)─(kali㉿kali)-[/mnt/…/htb/CTF/CTF-Business2026/mobile_noctavault]
+└─$ ./bruteforce
+[+] Stage 0
+[+] Found HTB{n
+[+] Stage 1
+[+] Found 4t1v3
+[+] Stage 2
+[+] Found _unp4
+[+] Stage 3
+[+] Found ck_w1
+[+] Stage 4
+[+] Found th_jn
+[+] Stage 5
+[+] Found i_tr4
+[+] Stage 6
+[+] Found mp0l1
+[+] Stage 7
+[+] Found n3_c0
+[+] Stage 8
+[+] Found mpl3t
+[+] Stage 9
+[+] Found 3}
+
+FLAG: HTB{n4t1v3_unp4ck_w1th_jni_tr4mp0l1n3_c0mpl3t3}
+```
